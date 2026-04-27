@@ -1,12 +1,12 @@
-from fastapi import FastAPI, Query, HTTPException, Response
+from fastapi import FastAPI, Query, HTTPException, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import re
+import json
 
 app = FastAPI(
-    title="Elite IMEI Proxy API",
-    description="Secured and Branded IMEI Lookup Service",
-    version="2.1.0"
+    title="SB-SAKIB Elite IMEI API",
+    description="Professional Secure IMEI Lookup Service",
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -19,65 +19,85 @@ app.add_middleware(
 API_KEY = "f43f0d0c-27b0-408a-abd0-585fabea6adf"
 DEVELOPER = "SB-SAKIB"
 
-# প্রক্সি ফাংশন: এটি ইমেজ বা লিঙ্ক হাইড করার জন্য কাজ করবে
+# প্রক্সি ইমেজ ফাংশন - এটি অরিজিনাল সোর্স হাইড করবে
 @app.get("/proxy/image")
 def proxy_image(url: str):
     try:
-        res = requests.get(url, stream=True, timeout=10)
+        res = requests.get(url, stream=True, timeout=15)
+        res.raise_for_status()
         return Response(content=res.content, media_type=res.headers.get("Content-Type"))
     except:
-        raise HTTPException(status_code=404, detail="Image not found")
+        # যদি ইমেজ লোড না হয় তবে একটি ডিফল্ট এরর ইমেজ বা ৪০০ এরর দিবে
+        raise HTTPException(status_code=404, detail="Image not available")
 
-def mask_data(data, base_url):
-    """এটি JSON ডেটার ভেতর থেকে সব বাইরের লিঙ্ক সরিয়ে আপনার লিঙ্ক বসিয়ে দিবে"""
-    data_str = str(data)
+def clean_and_mask(data, base_url):
+    """এটি ডেটা ক্লিন করবে এবং অরিজিনাল লিঙ্ক হাইড করবে"""
+    json_str = json.dumps(data)
     
-    # ১. ইমেজ ইউআরএল মাস্কিং
-    img_urls = re.findall(r'https?://[^\s<>"]+\.(?:jpg|jpeg|png|gif)', data_str)
-    for img in img_urls:
-        if "proxy/image" not in img:
-            new_img_url = f"{base_url}/proxy/image?url={img}"
-            data_str = data_str.replace(img, new_img_url)
+    # ১. ইমেজ ইউআরএল গুলোকে আপনার প্রক্সি ইউআরএল দিয়ে পরিবর্তন
+    # imei.info এর ইমেজ লিঙ্ক সাধারণত imei.info/media/ তে থাকে
+    if "imei.info" in json_str:
+        # ইমেজ প্রক্সি লিঙ্ক তৈরি
+        proxy_prefix = f"{base_url}/proxy/image?url="
+        json_str = json_str.replace("https://www.imei.info/media/", f"{proxy_prefix}https://www.imei.info/media/")
+        
+        # ২. অরিজিনাল লিঙ্কগুলো হাইড করা
+        json_str = json_str.replace("https://www.imei.info", "#protected_by_sakib")
+        json_str = json_str.replace("https://www.hardreset.info", "#protected_by_sakib")
+        json_str = json_str.replace("mailto:info@imei.info", "#protected_by_sakib")
 
-    # ২. অন্যান্য এক্সটারনাল ইউআরএল (IMEI.info, Hardreset ইত্যাদি) মাস্কিং
-    # এগুলোকে সরাসরি আপনার ডেভেলপারের ক্রেডিট বা কাস্টম লিঙ্কে কনভার্ট করা
-    external_links = re.findall(r'https?://(?:www\.)?(?:imei\.info|hardreset\.info)[^\s<>"]*', data_str)
-    for link in external_links:
-        data_str = data_str.replace(link, "#protected_by_sakib")
-
-    return eval(data_str)
+    return json.loads(json_str)
 
 @app.get("/")
 def home():
-    return {"status": "running", "provider": DEVELOPER}
+    return {
+        "status": "online", 
+        "developer": DEVELOPER,
+        "endpoint": "/check?imei=YOUR_IMEI"
+    }
 
 @app.get("/check")
-def check_imei(imei: str = Query(..., description="15 Digit IMEI"), request: Response = None):
-    # IMEI ভ্যালিডেশন
+def check_imei(request: Request, imei: str = Query(..., description="15 Digit IMEI")):
+    # বেসিক ভ্যালিডেশন
     if not imei.isdigit() or len(imei) < 14:
-        raise HTTPException(status_code=400, detail="Invalid IMEI")
+        return {"success": False, "message": "Invalid IMEI Format", "dev": DEVELOPER}
 
+    # আপনার প্রোভাইডার এপিআই ইউআরএল
     target_url = f"https://dash.imei.info/api/check/0/?imei={imei}&API_KEY={API_KEY}"
-    headers = {'User-Agent': "okhttp/4.9.2"}
+    
+    headers = {
+        'User-Agent': "okhttp/4.9.2",
+        'Accept': "application/json"
+    }
 
     try:
-        response = requests.get(target_url, headers=headers, timeout=15)
+        response = requests.get(target_url, headers=headers, timeout=20)
+        
+        if response.status_code != 200:
+            return {"success": False, "message": "Provider API Error", "status_code": response.status_code}
+            
         raw_data = response.json()
 
-        # বর্তমান সার্ভারের বেস ইউআরএল বের করা
-        # ভার্সেল বা লোকালহোস্ট যাই হোক অটো কাজ করবে
-        current_base_url = "https://your-app-name.vercel.app" # এখানে আপনার ভার্সেল লিঙ্কটি দিয়ে দিন বা ডাইনামিক রাখুন
+        # ডাইনামিক বেস ইউআরএল বের করা (লোকাল বা ভার্সেল অটো কাজ করবে)
+        base_url = str(request.base_url).rstrip('/')
 
-        # ডেটা মাস্কিং এবং প্রাউড ব্র্যান্ডিং
-        secured_data = mask_data(raw_data, "") # ইউআরএল ডাইনামিকালি হ্যান্ডেল হবে
+        # ডেটা মাস্কিং এবং সিকিউরিটি অ্যাপ্লাই
+        final_result = clean_and_mask(raw_data, base_url)
 
+        # প্রিমিয়াম রেসপন্স ফরম্যাট
         return {
             "success": True,
             "developer": DEVELOPER,
             "imei": imei,
-            "status": "Premium Encrypted Content",
-            "results": secured_data.get("result", {})
+            "brand": final_result.get("result", {}).get("header", {}).get("brand", "N/A"),
+            "model": final_result.get("result", {}).get("header", {}).get("model", "N/A"),
+            "full_details": final_result.get("result", {})
         }
 
     except Exception as e:
-        return {"success": False, "msg": "API Error", "dev": DEVELOPER}
+        return {
+            "success": False, 
+            "error": "System Error", 
+            "details": str(e),
+            "dev": DEVELOPER
+        }
