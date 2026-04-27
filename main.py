@@ -1,12 +1,11 @@
-from fastapi import FastAPI, Query, HTTPException, Response, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 import requests
-import json
 
 app = FastAPI(
     title="SB-SAKIB Elite IMEI API",
-    description="Professional Secure IMEI Lookup Service",
-    version="3.0.0"
+    description="Secured Data-Only IMEI Lookup Service",
+    version="4.0.0"
 )
 
 app.add_middleware(
@@ -19,50 +18,47 @@ app.add_middleware(
 API_KEY = "f43f0d0c-27b0-408a-abd0-585fabea6adf"
 DEVELOPER = "SB-SAKIB"
 
-# প্রক্সি ইমেজ ফাংশন - এটি অরিজিনাল সোর্স হাইড করবে
-@app.get("/proxy/image")
-def proxy_image(url: str):
-    try:
-        res = requests.get(url, stream=True, timeout=15)
-        res.raise_for_status()
-        return Response(content=res.content, media_type=res.headers.get("Content-Type"))
-    except:
-        # যদি ইমেজ লোড না হয় তবে একটি ডিফল্ট এরর ইমেজ বা ৪০০ এরর দিবে
-        raise HTTPException(status_code=404, detail="Image not available")
+def filter_premium_data(raw_data):
+    """এটি ইমেজ এবং লিঙ্কগুলোকে পুরোপুরি রিমুভ করে শুধু তথ্যগুলো রাখবে"""
+    if "result" not in raw_data:
+        return {}
 
-def clean_and_mask(data, base_url):
-    """এটি ডেটা ক্লিন করবে এবং অরিজিনাল লিঙ্ক হাইড করবে"""
-    json_str = json.dumps(data)
+    original_items = raw_data.get("result", {}).get("items", [])
+    header_info = raw_data.get("result", {}).get("header", {})
     
-    # ১. ইমেজ ইউআরএল গুলোকে আপনার প্রক্সি ইউআরএল দিয়ে পরিবর্তন
-    # imei.info এর ইমেজ লিঙ্ক সাধারণত imei.info/media/ তে থাকে
-    if "imei.info" in json_str:
-        # ইমেজ প্রক্সি লিঙ্ক তৈরি
-        proxy_prefix = f"{base_url}/proxy/image?url="
-        json_str = json_str.replace("https://www.imei.info/media/", f"{proxy_prefix}https://www.imei.info/media/")
-        
-        # ২. অরিজিনাল লিঙ্কগুলো হাইড করা
-        json_str = json_str.replace("https://www.imei.info", "#protected_by_sakib")
-        json_str = json_str.replace("https://www.hardreset.info", "#protected_by_sakib")
-        json_str = json_str.replace("mailto:info@imei.info", "#protected_by_sakib")
+    clean_items = []
+    
+    for item in original_items:
+        # শুধুমাত্র টেক্সট ডাটাগুলো নেওয়া হচ্ছে, বাটন বা লিঙ্ক বাদ দেওয়া হয়েছে
+        if item.get("role") in ["header", "item"]:
+            # কন্টেন্ট যদি কোনো লিঙ্ক বা ইমেইল হয় তবে সেটি বাদ দেওয়া হবে
+            content = str(item.get("content", ""))
+            if "http" not in content and "mailto" not in content:
+                clean_items.append({
+                    "title": item.get("title"),
+                    "value": content if content != "None" else "N/A"
+                })
 
-    return json.loads(json_str)
+    return {
+        "brand": header_info.get("brand", "N/A"),
+        "model": header_info.get("model", "N/A"),
+        "specifications": clean_items
+    }
 
 @app.get("/")
 def home():
     return {
         "status": "online", 
         "developer": DEVELOPER,
-        "endpoint": "/check?imei=YOUR_IMEI"
+        "mode": "Ultra Secure (No Tracking)"
     }
 
 @app.get("/check")
-def check_imei(request: Request, imei: str = Query(..., description="15 Digit IMEI")):
+def check_imei(imei: str = Query(..., description="15 Digit IMEI")):
     # বেসিক ভ্যালিডেশন
     if not imei.isdigit() or len(imei) < 14:
         return {"success": False, "message": "Invalid IMEI Format", "dev": DEVELOPER}
 
-    # আপনার প্রোভাইডার এপিআই ইউআরএল
     target_url = f"https://dash.imei.info/api/check/0/?imei={imei}&API_KEY={API_KEY}"
     
     headers = {
@@ -74,30 +70,31 @@ def check_imei(request: Request, imei: str = Query(..., description="15 Digit IM
         response = requests.get(target_url, headers=headers, timeout=20)
         
         if response.status_code != 200:
-            return {"success": False, "message": "Provider API Error", "status_code": response.status_code}
+            return {"success": False, "message": "Service Busy", "dev": DEVELOPER}
             
         raw_data = response.json()
 
-        # ডাইনামিক বেস ইউআরএল বের করা (লোকাল বা ভার্সেল অটো কাজ করবে)
-        base_url = str(request.base_url).rstrip('/')
+        # ডেটা ফিল্টারিং (ইমেজ এবং ইউআরএল বাদ দেওয়া)
+        final_details = filter_premium_data(raw_data)
 
-        # ডেটা মাস্কিং এবং সিকিউরিটি অ্যাপ্লাই
-        final_result = clean_and_mask(raw_data, base_url)
+        if not final_details:
+            return {"success": False, "message": "No data found for this IMEI", "dev": DEVELOPER}
 
-        # প্রিমিয়াম রেসপন্স ফরম্যাট
+        # প্রিমিয়াম আউটপুট
         return {
             "success": True,
             "developer": DEVELOPER,
             "imei": imei,
-            "brand": final_result.get("result", {}).get("header", {}).get("brand", "N/A"),
-            "model": final_result.get("result", {}).get("header", {}).get("model", "N/A"),
-            "full_details": final_result.get("result", {})
+            "device": {
+                "brand": final_details["brand"],
+                "model": final_details["model"]
+            },
+            "details": final_details["specifications"]
         }
 
-    except Exception as e:
+    except Exception:
         return {
             "success": False, 
-            "error": "System Error", 
-            "details": str(e),
+            "message": "Internal Server Error", 
             "dev": DEVELOPER
         }
